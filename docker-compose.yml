@@ -1,0 +1,97 @@
+name: ${COMPOSE_PROJECT_NAME:-frappe-devops-lab}
+
+x-frappe: &frappe
+  image: frappe/erpnext:${ERPNEXT_VERSION:-v16.31.1}
+  restart: unless-stopped
+  platform: linux/amd64
+  volumes:
+    - sites:/home/frappe/frappe-bench/sites
+  depends_on:
+    configurator:
+      condition: service_completed_successfully
+
+services:
+  configurator:
+    <<: *frappe
+    restart: on-failure
+    entrypoint: ["bash", "-c"]
+    command: >-
+      ls -1 apps > sites/apps.txt;
+      bench set-config -g db_host db;
+      bench set-config -gp db_port 3306;
+      bench set-config -g redis_cache redis://redis-cache:6379;
+      bench set-config -g redis_queue redis://redis-queue:6379;
+      bench set-config -g redis_socketio redis://redis-queue:6379;
+      bench set-config -gp socketio_port 9000;
+    environment:
+      DB_HOST: db
+    depends_on:
+      db:
+        condition: service_healthy
+      redis-cache:
+        condition: service_started
+      redis-queue:
+        condition: service_started
+
+  db:
+    image: mariadb:11.8
+    restart: unless-stopped
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      MARIADB_AUTO_UPGRADE: "1"
+    volumes: [db-data:/var/lib/mysql]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis-cache:
+    image: redis:8-alpine
+    restart: unless-stopped
+
+  redis-queue:
+    image: redis:8-alpine
+    restart: unless-stopped
+    volumes: [redis-queue-data:/data]
+
+  backend:
+    <<: *frappe
+    environment:
+      GUNICORN_THREADS: 4
+      GUNICORN_WORKERS: 2
+      GUNICORN_TIMEOUT: 120
+
+  frontend:
+    <<: *frappe
+    command: ["nginx-entrypoint.sh"]
+    environment:
+      BACKEND: backend:8000
+      SOCKETIO: websocket:9000
+      FRAPPE_SITE_NAME_HEADER: ${FRAPPE_SITE_NAME_HEADER:-$$host}
+      CLIENT_MAX_BODY_SIZE: 50m
+    ports: ["${HTTP_PUBLISH_PORT:-8080}:8080"]
+    depends_on: [backend, websocket]
+
+  websocket:
+    <<: *frappe
+    command: ["node", "/home/frappe/frappe-bench/apps/frappe/socketio.js"]
+
+  queue-short:
+    <<: *frappe
+    command: ["bench", "worker", "--queue", "short,default"]
+
+  queue-long:
+    <<: *frappe
+    command: ["bench", "worker", "--queue", "long,default,short"]
+
+  scheduler:
+    <<: *frappe
+    command: ["bench", "schedule"]
+
+volumes:
+  sites:
+  db-data:
+  redis-queue-data:
+

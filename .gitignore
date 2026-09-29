@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+backups/
+*.sql
+*.sql.gz
+*.dump
+*.tar.gz
+sites/
+logs/
+cloudflared/*.json
+cloudflared/*.yml
+*.pem
+*.key
+.DS_Store
+
